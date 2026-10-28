@@ -8,7 +8,7 @@ import transporter from "../config/email.js";
 
 export const register = async (req, res) => {
   try {
-const { name, email, password, confirmPassword } = req.body;
+const { name, email, password, confirmPassword,acceptedTerms } = req.body;
     // 1. Check required fields
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -20,6 +20,7 @@ const { name, email, password, confirmPassword } = req.body;
     message: "Please confirm your password.",
   });
 }
+
 
 if (password !== confirmPassword) {
   return res.status(400).json({
@@ -33,7 +34,11 @@ if (password !== confirmPassword) {
         message: "Password must be at least 4 characters long",
       });
     }
-
+    if (acceptedTerms !== true) {
+  return res.status(400).json({
+    message: "You must accept the Terms of Service to register.",
+  });
+}
 
     // 3. Check whether email already exists
     const existingUser = await User.findOne({ email });
@@ -48,11 +53,14 @@ if (password !== confirmPassword) {
     const hashedPassword = await argon2.hash(password);
 
     // 5. Create user
-    const user = await User.create({
-      name,
-      email,
-      password: hashedPassword,
-    });
+   const user = await User.create({
+  name,
+  email,
+  password: hashedPassword,
+  acceptedTerms: true,
+  termsAcceptedAt: new Date(),
+  termsVersion: "1.0",
+});
 
     // 6. Never send the password/hash back
     return res.status(201).json({
@@ -88,7 +96,7 @@ export const login = async (req, res) => {
     // 2. Find the user by email
     const user = await User.findOne({
       email: email.trim().toLowerCase(),
-    });
+    }).select("+password");
 
     if (!user) {
       return res.status(401).json({
