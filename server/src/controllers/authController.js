@@ -61,10 +61,19 @@ if (password !== confirmPassword) {
   termsAcceptedAt: new Date(),
   termsVersion: "1.0",
 });
+if (!process.env.JWT_SECRET) {
+  throw new Error("JWT_SECRET is not configured.");
+}
 
+const token = jwt.sign(
+  { userId: user._id.toString() },
+  process.env.JWT_SECRET,
+  { expiresIn: process.env.JWT_EXPIRES_IN }
+);
     // 6. Never send the password/hash back
     return res.status(201).json({
       message: "User registered successfully",
+      token,
       user: {
         id: user._id,
         name: user.name,
