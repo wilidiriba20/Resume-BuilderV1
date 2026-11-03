@@ -1,3 +1,4 @@
+
 import jwt from "jsonwebtoken";
 
 const authMiddleware = (req, res, next) => {
@@ -10,19 +11,15 @@ const authMiddleware = (req, res, next) => {
       });
     }
 
-    if (!authHeader.startsWith("Bearer ")) {
+    const match = authHeader.match(/^Bearer\s+(\S+)$/i);
+
+    if (!match) {
       return res.status(401).json({
         message: "Invalid authorization format.",
       });
     }
 
-    const token = authHeader.split(" ")[1];
-
-    if (!token) {
-      return res.status(401).json({
-        message: "Authentication token is missing.",
-      });
-    }
+    const token = match[1];
 
     if (!process.env.JWT_SECRET) {
       throw new Error("JWT_SECRET is not configured.");
@@ -33,21 +30,32 @@ const authMiddleware = (req, res, next) => {
       process.env.JWT_SECRET
     );
 
+    if (
+      typeof decoded !== "object" ||
+      !decoded.userId
+    ) {
+      return res.status(401).json({
+        message: "Invalid authentication token.",
+      });
+    }
+
     req.user = {
       userId: decoded.userId,
     };
 
     next();
-  } catch (error) {
-    if (error.name === "TokenExpiredError") {
-      return res.status(401).json({
-        message: "Your session has expired. Please log in again.",
-      });
-    }
 
-    if (error.name === "JsonWebTokenError") {
+  } catch (error) {
+    if (
+      error.name === "TokenExpiredError" ||
+      error.name === "NotBeforeError" ||
+      error.name === "JsonWebTokenError"
+    ) {
       return res.status(401).json({
-        message: "Invalid authentication token.",
+        message:
+          error.name === "TokenExpiredError"
+            ? "Your session has expired. Please log in again."
+            : "Invalid authentication token.",
       });
     }
 
