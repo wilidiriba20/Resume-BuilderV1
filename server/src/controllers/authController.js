@@ -512,6 +512,7 @@ export const googleLinkAuth = async (req, res) => {
 // 7. GOOGLE AUTHENTICATION CALLBACK
 // =====================================
 
+
 export const googleCallback = async (req, res) => {
   const frontendUrl = getFrontendUrl();
 
@@ -522,7 +523,18 @@ export const googleCallback = async (req, res) => {
 
     const { code, state, error } = req.query;
     const savedState = req.cookies?.google_oauth_state;
+    console.log("========== GOOGLE OAUTH DEBUG ==========");
+console.log("Google error:", error || "None");
+console.log("Authorization code received:", Boolean(code));
+console.log("State received:", Boolean(state));
+console.log("State cookie received:", Boolean(savedState));
+console.log(
+  "State matches:",
+  Boolean(state && savedState && state === savedState)
+);
+console.log("========================================");
 
+    // Clear OAuth state cookie after callback.
     res.clearCookie("google_oauth_state", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -530,6 +542,7 @@ export const googleCallback = async (req, res) => {
       path: "/api/auth/google/callback",
     });
 
+    // Validate Google response and OAuth state.
     if (
       error ||
       typeof code !== "string" ||
@@ -537,11 +550,14 @@ export const googleCallback = async (req, res) => {
       !savedState ||
       state !== savedState
     ) {
-      return res.redirect(`${frontendUrl}/login?error=google_auth_failed`);
+      return res.redirect(
+        `${frontendUrl}/login?error=google_auth_failed`
+      );
     }
 
     checkJwtConfig();
 
+    // Verify signed OAuth state.
     const stateData = jwt.verify(state, process.env.JWT_SECRET);
 
     if (
@@ -549,15 +565,46 @@ export const googleCallback = async (req, res) => {
       !stateData.nonce ||
       !["login", "link"].includes(stateData.purpose)
     ) {
-      return res.redirect(`${frontendUrl}/login?error=google_auth_failed`);
+      return res.redirect(
+        `${frontendUrl}/login?error=google_auth_failed`
+      );
     }
 
-    const { tokens } = await googleClient.getToken(code);
+    // Exchange authorization code for Google tokens.
+    // STEP 1: Exchange authorization code
+console.log("STEP 1: Exchanging Google authorization code...");
+
+const { tokens } = await googleClient.getToken(code);
+
+console.log("STEP 1 SUCCESS: Google tokens received.");
+console.log("ID token received:", Boolean(tokens.id_token));
+
+// STEP 2: Verify Google identity
+console.log("STEP 2: Verifying Google identity...");
+
+if (!tokens.id_token) {
+  throw new Error("Google did not return an ID token.");
+}
+
+const tickets = await googleClient.verifyIdToken({
+  idToken: tokens.id_token,
+  audience: process.env.GOOGLE_CLIENT_ID,
+});
+
+console.log("STEP 2 SUCCESS: Google identity verified.");
+
+const payloads = tickets.getPayload();
+
+console.log("STEP 3: Checking Google profile...");
+console.log("Email received:", Boolean(payloads?.email));
+console.log("Email verified:", payloads?.email_verified);
+console.log("Google ID received:", Boolean(payloads?.sub));
 
     if (!tokens.id_token) {
       throw new Error("Google did not return an ID token.");
     }
 
+    // Verify Google identity.
     const ticket = await googleClient.verifyIdToken({
       idToken: tokens.id_token,
       audience: process.env.GOOGLE_CLIENT_ID,
@@ -572,7 +619,7 @@ export const googleCallback = async (req, res) => {
       payload.email_verified !== true
     ) {
       return res.redirect(
-        `${frontendUrl}/login?error=google_verification_failed`,
+        `${frontendUrl}/login?error=google_verification_failed`
       );
     }
 
@@ -580,21 +627,30 @@ export const googleCallback = async (req, res) => {
     const email = payload.email.trim().toLowerCase();
 
     if (!isValidEmail(email)) {
-      return res.redirect(`${frontendUrl}/login?error=invalid_email`);
+      return res.redirect(
+        `${frontendUrl}/login?error=invalid_email`
+      );
     }
 
     const name = payload.name?.trim() || email.split("@")[0];
 
-    // LINK GOOGLE ACCOUNT
+    // =====================================
+    // GOOGLE ACCOUNT LINKING
+    // =====================================
+
     if (stateData.purpose === "link") {
       if (!stateData.userId) {
-        return res.redirect(`${frontendUrl}/settings?error=google_auth_failed`);
+        return res.redirect(
+          `${frontendUrl}/settings?error=google_auth_failed`
+        );
       }
 
       const user = await User.findById(stateData.userId);
 
       if (!user) {
-        return res.redirect(`${frontendUrl}/settings?error=user_not_found`);
+        return res.redirect(
+          `${frontendUrl}/settings?error=user_not_found`
+        );
       }
 
       const existingGoogleUser = await User.findOne({ googleId });
@@ -604,13 +660,13 @@ export const googleCallback = async (req, res) => {
         existingGoogleUser._id.toString() !== user._id.toString()
       ) {
         return res.redirect(
-          `${frontendUrl}/settings?error=google_already_linked`,
+          `${frontendUrl}/settings?error=google_already_linked`
         );
       }
 
       if (user.googleId && user.googleId !== googleId) {
         return res.redirect(
-          `${frontendUrl}/settings?error=another_google_account_linked`,
+          `${frontendUrl}/settings?error=another_google_account_linked`
         );
       }
 
@@ -618,44 +674,89 @@ export const googleCallback = async (req, res) => {
 
       await user.save();
 
-      return res.redirect(`${frontendUrl}/settings?google_linked=success`);
+      return res.redirect(
+        `${frontendUrl}/settings?google_linked=success`
+      );
     }
 
-    // NORMAL GOOGLE LOGIN
+    // =====================================
+    // NORMAL GOOGLE LOGIN / REGISTRATION
+    // =====================================
+
+    // 1. Find an account already linked to this Google ID.
+    console.log("STEP 4: Searching for Google account...");
+
     let user = await User.findOne({ googleId });
+    console.log("Google account found:", Boolean(user));
 
     if (!user) {
-      if (stateData.acceptedTerms !== true) {
-        return res.redirect(`${frontendUrl}/login?error=terms_required`);
-      }
+        console.log("STEP 5: Searching by email...");
 
+      // 2. If not found, check whether the verified email already exists.
       const existingUser = await User.findOne({ email });
+        console.log("Existing email account found:", Boolean(existingUser));
+
 
       if (existingUser) {
-        return res.redirect(`${frontendUrl}/login?error=account_exists`);
+        // Do not link a different Google account to an account
+        // that already has another Google account linked.
+        if (
+          existingUser.googleId &&
+          existingUser.googleId !== googleId
+        ) {
+          return res.redirect(
+            `${frontendUrl}/login?error=another_google_account_linked`
+          );
+        }
+
+        // Link Google to the existing account.
+        existingUser.googleId = googleId;
+
+        await existingUser.save();
+
+        user = existingUser;
+      } else {
+        // 3. Require terms acceptance for new registrations.
+        if (stateData.acceptedTerms !== true) {
+          return res.redirect(
+            `${frontendUrl}/login?error=terms_required`
+          );
+        }
+
+        // 4. Create a new Google account.
+        user = await User.create({
+          name,
+          email,
+          googleId,
+          authProvider: "google",
+          acceptedTerms: true,
+          termsAcceptedAt: new Date(),
+          termsVersion: "1.0",
+        });
       }
-
-      user = await User.create({
-        name,
-        email,
-        googleId,
-        authProvider: "google",
-        acceptedTerms: true,
-        termsAcceptedAt: new Date(),
-        termsVersion: "1.0",
-      });
     }
-
+console.log("STEP 6: Checking user before JWT generation...");
+console.log("User exists:", Boolean(user));
+console.log("User ID exists:", Boolean(user?._id));
+    // 5. Generate authentication token.
     const token = generateToken(user._id);
+    console.log("STEP 6 SUCCESS: JWT generated.");
 
+    // 6. Redirect to frontend callback with the token.
+    console.log("STEP 7: Redirecting to frontend...");
+console.log("Frontend URL:", process.env.FRONTEND_URL);
+console.log("Token generated:", Boolean(token));
     return res.redirect(
-      `${frontendUrl}/auth/google/callback#token=${encodeURIComponent(token)}`,
+      `${frontendUrl}/auth/google/callback#token=${encodeURIComponent(token)}`
     );
+
   } catch (error) {
     console.error("Google callback error:", error.message);
 
     if (frontendUrl) {
-      return res.redirect(`${frontendUrl}/login?error=google_auth_failed`);
+      return res.redirect(
+        `${frontendUrl}/login?error=google_auth_failed`
+      );
     }
 
     return res.status(500).json({
@@ -663,3 +764,4 @@ export const googleCallback = async (req, res) => {
     });
   }
 };
+
